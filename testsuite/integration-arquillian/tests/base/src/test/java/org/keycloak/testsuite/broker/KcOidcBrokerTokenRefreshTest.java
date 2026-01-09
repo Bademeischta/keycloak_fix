@@ -58,6 +58,7 @@ import org.keycloak.testsuite.arquillian.annotation.EnableFeature;
 import org.keycloak.testsuite.arquillian.annotation.EnableFeatures;
 import org.keycloak.testsuite.util.AdminClientUtil;
 import org.keycloak.testsuite.util.ServerURLs;
+import org.keycloak.testsuite.util.oauth.OAuthClient;
 import org.keycloak.util.BasicAuthHelper;
 
 import org.junit.Test;
@@ -126,7 +127,49 @@ public class KcOidcBrokerTokenRefreshTest extends AbstractInitializedBaseBrokerT
         org.keycloak.testsuite.util.oauth.AccessTokenResponse tokenResponse = oauth.realm(bc.providerRealmName()).client(brokerApp.getClientId(), brokerApp.getSecret()).doPasswordGrantRequest(bc.getUserLogin(), bc.getUserPassword());
         assertThat(tokenResponse.getIdToken(), notNullValue());
 
-        testingClient.server(BrokerTestConstants.REALM_CONS_NAME).run(KcOidcBrokerTokenRefreshTest::setupRealm);
+        // Prepare strings for lambda
+        final String authServerRoot = ServerURLs.getAuthServerContextRoot();
+        final String appRoot = authServerRoot + "/realms/master/app";
+        final String providerRealmName = BrokerTestConstants.REALM_PROV_NAME;
+
+        testingClient.server(BrokerTestConstants.REALM_CONS_NAME).run(session -> {
+            RealmModel realm = session.getContext().getRealm();
+            if (realm == null) throw new RuntimeException("Realm is null");
+
+            IdentityProviderModel idp = session.identityProviders().getByAlias(IDP_OIDC_ALIAS);
+            if (idp == null) throw new RuntimeException("Identity provider not found: " + IDP_OIDC_ALIAS);
+
+            ClientModel client = realm.addClient("test-app");
+            client.setClientId("test-app");
+            client.setPublicClient(false);
+            client.setDirectAccessGrantsEnabled(true);
+            client.setEnabled(true);
+            client.setSecret("secret");
+            client.setProtocol(OIDCLoginProtocol.LOGIN_PROTOCOL);
+            client.setFullScopeAllowed(false);
+            client.setRedirectUris(Set.of(authServerRoot + "/*"));
+
+            ClientModel brokerAppClient = realm.getClientByClientId("broker-app");
+            if (brokerAppClient == null) throw new RuntimeException("Client broker-app not found in consumer realm");
+
+            AdminPermissionManagement management = AdminPermissions.management(session, realm);
+            management.idps().setPermissionsEnabled(idp, true);
+            ClientPolicyRepresentation clientRep = new ClientPolicyRepresentation();
+            clientRep.setName("toIdp");
+            clientRep.addClient(client.getId(), brokerAppClient.getId());
+            ResourceServer server = management.realmResourceServer();
+            Policy clientPolicy = management.authz().getStoreFactory().getPolicyStore().create(server, clientRep);
+            management.idps().exchangeToPermission(idp).addAssociatedPolicy(clientPolicy);
+
+            RealmModel provRealm = session.realms().getRealmByName(providerRealmName);
+            if (provRealm == null) throw new RuntimeException("Provider realm not found: " + providerRealmName);
+
+            ClientModel provClient = provRealm.getClientByClientId("brokerapp");
+            if (provClient == null) throw new RuntimeException("Client brokerapp not found in provider realm");
+
+            provClient.addRedirectUri(appRoot + "/auth");
+            provClient.setAttribute(OIDCConfigAttributes.BACKCHANNEL_LOGOUT_URL, appRoot + "/admin/backchannelLogout");
+        });
 
         try (Client httpClient = AdminClientUtil.createResteasyClient()) {
             WebTarget exchangeUrl = getConsumerTokenEndpoint(httpClient);
@@ -181,45 +224,8 @@ public class KcOidcBrokerTokenRefreshTest extends AbstractInitializedBaseBrokerT
         }
     }
 
-    private static void setupRealm(KeycloakSession session) {
-        RealmModel realm = session.getContext().getRealm();
-        IdentityProviderModel idp = session.identityProviders().getByAlias(IDP_OIDC_ALIAS);
-
-        if (idp == null) {
-            throw new RuntimeException("Identity provider not found: " + IDP_OIDC_ALIAS);
-        }
-
-        ClientModel client = realm.addClient("test-app");
-        client.setClientId("test-app");
-        client.setPublicClient(false);
-        client.setDirectAccessGrantsEnabled(true);
-        client.setEnabled(true);
-        client.setSecret("secret");
-        client.setProtocol(OIDCLoginProtocol.LOGIN_PROTOCOL);
-        client.setFullScopeAllowed(false);
-        String authServerRoot = ServerURLs.getAuthServerContextRoot();
-        client.setRedirectUris(Set.of(authServerRoot + "/*"));
-
-        ClientModel brokerApp = realm.getClientByClientId("broker-app");
-
-        AdminPermissionManagement management = AdminPermissions.management(session, realm);
-        management.idps().setPermissionsEnabled(idp, true);
-        ClientPolicyRepresentation clientRep = new ClientPolicyRepresentation();
-        clientRep.setName("toIdp");
-        clientRep.addClient(client.getId(), brokerApp.getId());
-        ResourceServer server = management.realmResourceServer();
-        Policy clientPolicy = management.authz().getStoreFactory().getPolicyStore().create(server, clientRep);
-        management.idps().exchangeToPermission(idp).addAssociatedPolicy(clientPolicy);
-
-        realm = session.realms().getRealmByName(BrokerTestConstants.REALM_PROV_NAME);
-        client = realm.getClientByClientId("brokerapp");
-        String appRoot = authServerRoot + "/realms/master/app";
-        client.addRedirectUri(appRoot + "/auth");
-        client.setAttribute(OIDCConfigAttributes.BACKCHANNEL_LOGOUT_URL, appRoot + "/admin/backchannelLogout");
-    }
-
     private WebTarget getConsumerTokenEndpoint(Client httpClient) {
-        return httpClient.target(ServerURLs.getAuthServerContextRoot() + "/auth")
+        return httpClient.target(OAuthClient.AUTH_SERVER_ROOT)
                 .path("/realms")
                 .path(bc.consumerRealmName())
                 .path("protocol/openid-connect/token");
