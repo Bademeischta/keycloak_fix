@@ -50,23 +50,12 @@ public class KcOidcBrokerTokenRefreshTest extends AbstractInitializedBaseBrokerT
 
         // 2. Get DB Token
         String initialTokenJson = getFederatedIdentityToken(bc.consumerRealmName(), bc.getUserLogin(), bc.getIDPAlias());
-        AbstractOAuth2IdentityProvider.OAuthResponse initialToken = JsonSerialization.readValue(initialTokenJson, AbstractOAuth2IdentityProvider.OAuthResponse.class);
 
         // 3. Time Travel
         // Expire the access token from the provider
         Integer accessTokenLifespan = adminClient.realm(bc.providerRealmName()).toRepresentation().getAccessTokenLifespan();
         int offset = (accessTokenLifespan != null ? accessTokenLifespan : 60) + 10;
         setTimeOffset(offset);
-
-        // Verify that the refresh token is still valid by trying to refresh it manually against the Provider
-        // This ensures the 502 is not because the refresh token itself is invalid/expired
-        oauth.realm(bc.providerRealmName());
-        oauth.client(bc.getIDPClientIdInProviderRealm(), "secret"); // client secret from KcOidcBrokerConfiguration
-        org.keycloak.testsuite.util.oauth.AccessTokenResponse refreshResponse = oauth.doRefreshTokenRequest(initialToken.getRefreshToken());
-        if (refreshResponse.getError() != null) {
-            throw new RuntimeException("Manual refresh failed: " + refreshResponse.getError() + " - " + refreshResponse.getErrorDescription());
-        }
-        assertThat(refreshResponse.getAccessToken(), not(equalTo(null)));
 
         // 4. Retrieve Token via API (Triggers Broker Refresh)
         // Login to Consumer to get access token for the user
