@@ -26,10 +26,12 @@ import java.nio.file.Paths;
 import java.util.Map;
 import java.util.Properties;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.stream.Stream;
 
 import org.keycloak.common.Profile;
 import org.keycloak.config.LoggingOptions;
+import org.keycloak.cookie.CookieType;
 import org.keycloak.quarkus.runtime.Environment;
 import org.keycloak.quarkus.runtime.KeycloakMain;
 import org.keycloak.quarkus.runtime.cli.command.AbstractAutoBuildCommand;
@@ -49,6 +51,7 @@ import picocli.CommandLine.Help;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.anyOf;
 import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.emptyString;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.not;
 import static org.hamcrest.Matchers.nullValue;
@@ -127,6 +130,16 @@ public class PicocliTest extends AbstractConfigurationTest {
         NonRunningPicocli nonRunningPicocli = new NonRunningPicocli();
         KeycloakMain.main(args, nonRunningPicocli);
         return nonRunningPicocli;
+    }
+
+    private void assertError(NonRunningPicocli picocli, String message) {
+        assertThat(picocli.exitCode, is(CommandLine.ExitCode.USAGE));
+        assertThat(picocli.getErrString(), containsString(message));
+    }
+
+    private void assertNoError(NonRunningPicocli picocli) {
+        assertThat(picocli.getErrString(), is(emptyString()));
+        assertThat(picocli.exitCode, is(CommandLine.ExitCode.OK));
     }
 
     @Test
@@ -982,6 +995,78 @@ public class PicocliTest extends AbstractConfigurationTest {
 
         nonRunningPicocli = pseudoLaunch("start-dev", "--http-access-log-enabled=true", "--http-access-log-exclude='/realms/my-realm/.*");
         assertEquals(CommandLine.ExitCode.OK, nonRunningPicocli.exitCode);
+        onAfter();
+
+        // masked headers and cookies - default
+        nonRunningPicocli = pseudoLaunch("start-dev", "--http-access-log-enabled=true");
+        assertEquals(CommandLine.ExitCode.OK, nonRunningPicocli.exitCode);
+        assertExternalConfig("quarkus.http.access-log.masked-headers", "Authorization");
+        assertExternalConfig("quarkus.http.access-log.masked-cookies", "AUTH_SESSION_ID,KC_AUTH_SESSION_HASH,KEYCLOAK_IDENTITY,KEYCLOAK_SESSION,AUTH_SESSION_ID_LEGACY,KEYCLOAK_IDENTITY_LEGACY,KEYCLOAK_SESSION_LEGACY");
+        onAfter();
+
+        // masked headers - custom
+        nonRunningPicocli = pseudoLaunch("start-dev", "--http-access-log-enabled=true", "--http-access-log-masked-headers=My-custom-header,Authorization");
+        assertEquals(CommandLine.ExitCode.OK, nonRunningPicocli.exitCode);
+        assertExternalConfig("quarkus.http.access-log.masked-headers", "Authorization,My-custom-header");
+        onAfter();
+
+        // masked cookies - custom
+        nonRunningPicocli = pseudoLaunch("start-dev", "--http-access-log-enabled=true", "--http-access-log-masked-cookies=MY_CUSTOM_COOKIE," + CookieType.AUTH_SESSION_ID.getName());
+        assertEquals(CommandLine.ExitCode.OK, nonRunningPicocli.exitCode);
+        assertExternalConfig("quarkus.http.access-log.masked-cookies", "AUTH_SESSION_ID,KC_AUTH_SESSION_HASH,KEYCLOAK_IDENTITY,KEYCLOAK_SESSION,AUTH_SESSION_ID_LEGACY,KEYCLOAK_IDENTITY_LEGACY,KEYCLOAK_SESSION_LEGACY,MY_CUSTOM_COOKIE");
+        onAfter();
+
+        // log to file
+        nonRunningPicocli = pseudoLaunch("start-dev", "--http-access-log-file-enabled=true");
+        assertEquals(CommandLine.ExitCode.USAGE, nonRunningPicocli.exitCode);
+        assertThat(nonRunningPicocli.getErrString(), containsString("Available only when HTTP Access log is enabled"));
+        assertExternalConfigNull("quarkus.http.access-log.log-to-file");
+        onAfter();
+
+        // log to file defaults
+        nonRunningPicocli = pseudoLaunch("start-dev", "--http-access-log-enabled=true", "--http-access-log-file-enabled=true");
+        assertEquals(CommandLine.ExitCode.OK, nonRunningPicocli.exitCode);
+        assertExternalConfig(Map.of(
+                "quarkus.http.access-log.log-to-file", "true",
+                "quarkus.http.access-log.base-file-name", "keycloak-http-access",
+                "quarkus.http.access-log.log-suffix", ".log",
+                "quarkus.http.access-log.rotate", "true"
+        ));
+        onAfter();
+
+        // name - disabled
+        nonRunningPicocli = pseudoLaunch("start-dev", "--http-access-log-enabled=true", "--http-access-log-file-name=something");
+        assertEquals(CommandLine.ExitCode.USAGE, nonRunningPicocli.exitCode);
+        assertThat(nonRunningPicocli.getErrString(), containsString("Available only when HTTP Access logging to file is enabled"));
+        assertExternalConfig("quarkus.http.access-log.log-to-file", "false");
+        assertExternalConfigNull("quarkus.http.access-log.base-file-name");
+        onAfter();
+
+        // name
+        nonRunningPicocli = pseudoLaunch("start-dev", "--http-access-log-enabled=true", "--http-access-log-file-enabled=true", "--http-access-log-file-name=something");
+        assertEquals(CommandLine.ExitCode.OK, nonRunningPicocli.exitCode);
+        assertExternalConfig(Map.of(
+                "quarkus.http.access-log.log-to-file", "true",
+                "quarkus.http.access-log.base-file-name", "something")
+        );
+        onAfter();
+
+        // suffix
+        nonRunningPicocli = pseudoLaunch("start-dev", "--http-access-log-enabled=true", "--http-access-log-file-enabled=true", "--http-access-log-file-suffix=.txt");
+        assertEquals(CommandLine.ExitCode.OK, nonRunningPicocli.exitCode);
+        assertExternalConfig(Map.of(
+                "quarkus.http.access-log.log-to-file", "true",
+                "quarkus.http.access-log.log-suffix", ".txt")
+        );
+        onAfter();
+
+        // rotate
+        nonRunningPicocli = pseudoLaunch("start-dev", "--http-access-log-enabled=true", "--http-access-log-file-enabled=true", "--http-access-log-file-rotate=false");
+        assertEquals(CommandLine.ExitCode.OK, nonRunningPicocli.exitCode);
+        assertExternalConfig(Map.of(
+                "quarkus.http.access-log.log-to-file", "true",
+                "quarkus.http.access-log.rotate", "false")
+        );
     }
 
     @Test
@@ -1017,11 +1102,6 @@ public class PicocliTest extends AbstractConfigurationTest {
         assertThat(nonRunningPicocli.getErrString(), containsString("Unknown option: '--non-existing'"));
         onAfter();
 
-        nonRunningPicocli = pseudoLaunch("start-dev", "-Dsome.property=123", "-Dsome.property=456");
-        assertEquals(CommandLine.ExitCode.OK, nonRunningPicocli.exitCode);
-        assertThat(nonRunningPicocli.getOutString(), containsString("WARNING: Duplicated options present in CLI: -Dsome.property"));
-        onAfter();
-
         nonRunningPicocli = pseudoLaunch("start-dev", "something-wrong=asdf", "something-wrong=not-here");
         assertEquals(CommandLine.ExitCode.USAGE, nonRunningPicocli.exitCode);
         assertThat(nonRunningPicocli.getOutString(), not(containsString("WARNING: Duplicated options present in CLI: something-wrong")));
@@ -1038,6 +1118,138 @@ public class PicocliTest extends AbstractConfigurationTest {
         nonRunningPicocli = pseudoLaunch("start-dev", "--features=http-optimized-serializers");
         assertEquals(CommandLine.ExitCode.OK, nonRunningPicocli.exitCode);
         assertExternalConfig("quarkus.rest.jackson.optimization.enable-reflection-free-serializers", "true");
+    }
+
+    @Test
+    public void telemetryParentHeaders() {
+        // tracing enabled
+        var nonRunningPicocli = pseudoLaunch("start-dev", "--tracing-enabled=true", "--telemetry-header-Authorization=Bearer asdlkfjadsflkj");
+        assertNoError(nonRunningPicocli);
+        assertExternalConfig("quarkus.otel.exporter.otlp.traces.headers", "Authorization=Bearer asdlkfjadsflkj");
+        onAfter();
+
+        Function<String, String[]> enableAll = (additional) -> new String[]{"start-dev", "--telemetry-header-Authorization=Bearer asdlkfjadsflkj", "--tracing-enabled=true", "--features=opentelemetry-logs,opentelemetry-metrics", "--telemetry-logs-enabled=true", "--telemetry-metrics-enabled=true", "--metrics-enabled=true", additional};
+
+        nonRunningPicocli = pseudoLaunch(enableAll.apply("--telemetry-header-Something=keycloak"));
+        assertNoError(nonRunningPicocli);
+        assertExternalConfig("quarkus.otel.exporter.otlp.traces.headers", "Authorization=Bearer asdlkfjadsflkj,Something=keycloak");
+        assertExternalConfig("quarkus.otel.exporter.otlp.logs.headers", "Authorization=Bearer asdlkfjadsflkj,Something=keycloak");
+        assertExternalConfig("quarkus.otel.exporter.otlp.metrics.headers", "Authorization=Bearer asdlkfjadsflkj,Something=keycloak");
+        onAfter();
+
+        // override logs headers
+        nonRunningPicocli = pseudoLaunch("start-dev", "--features=opentelemetry-logs", "--telemetry-logs-enabled=true", "--telemetry-header-Authorization=Bearer asdlkfjadsflkj", "--telemetry-header-Something=telemetry", "--telemetry-logs-header-Authorization=Bearer logging-token", "--telemetry-logs-header-Something=telemetry-logs");
+        assertNoError(nonRunningPicocli);
+        assertExternalConfig("quarkus.otel.exporter.otlp.logs.headers", "Authorization=Bearer logging-token,Something=telemetry-logs");
+        onAfter();
+
+        nonRunningPicocli = pseudoLaunch(enableAll.apply("--telemetry-logs-header-Authorization=Bearer logs-override"));
+        assertNoError(nonRunningPicocli);
+        assertExternalConfig("quarkus.otel.exporter.otlp.traces.headers", "Authorization=Bearer asdlkfjadsflkj");
+        assertExternalConfig("quarkus.otel.exporter.otlp.logs.headers", "Authorization=Bearer logs-override");
+        assertExternalConfig("quarkus.otel.exporter.otlp.metrics.headers", "Authorization=Bearer asdlkfjadsflkj");
+        onAfter();
+
+        // override metrics headers
+        nonRunningPicocli = pseudoLaunch("start-dev", "--features=opentelemetry-metrics", "--metrics-enabled=true", "--telemetry-metrics-enabled=true", "--telemetry-header-Authorization=Bearer asdlkfjadsflkj", "--telemetry-header-Something=telemetry", "--telemetry-metrics-header-Authorization=Bearer metrics-token", "--telemetry-metrics-header-Something=telemetry-metrics");
+        assertNoError(nonRunningPicocli);
+        assertExternalConfig("quarkus.otel.exporter.otlp.metrics.headers", "Authorization=Bearer metrics-token,Something=telemetry-metrics");
+        onAfter();
+
+        nonRunningPicocli = pseudoLaunch(enableAll.apply("--telemetry-metrics-header-Authorization=Bearer metrics-override"));
+        assertNoError(nonRunningPicocli);
+        assertExternalConfig("quarkus.otel.exporter.otlp.traces.headers", "Authorization=Bearer asdlkfjadsflkj");
+        assertExternalConfig("quarkus.otel.exporter.otlp.logs.headers", "Authorization=Bearer asdlkfjadsflkj");
+        assertExternalConfig("quarkus.otel.exporter.otlp.metrics.headers", "Authorization=Bearer metrics-override");
+        onAfter();
+
+        // override traces headers
+        nonRunningPicocli = pseudoLaunch("start-dev", "--tracing-enabled=true", "--telemetry-header-Authorization=Bearer asdlkfjadsflkj", "--telemetry-header-Something=telemetry", "--tracing-header-Authorization=Bearer tracing-token", "--tracing-header-Something=telemetry-traces");
+        assertNoError(nonRunningPicocli);
+        assertExternalConfig("quarkus.otel.exporter.otlp.traces.headers", "Authorization=Bearer tracing-token,Something=telemetry-traces");
+        onAfter();
+
+        nonRunningPicocli = pseudoLaunch(enableAll.apply("--tracing-header-Authorization=Bearer tracing-override"));
+        assertNoError(nonRunningPicocli);
+        assertExternalConfig("quarkus.otel.exporter.otlp.traces.headers", "Authorization=Bearer tracing-override");
+        assertExternalConfig("quarkus.otel.exporter.otlp.logs.headers", "Authorization=Bearer asdlkfjadsflkj");
+        assertExternalConfig("quarkus.otel.exporter.otlp.metrics.headers", "Authorization=Bearer asdlkfjadsflkj");
+    }
+
+    @Test
+    public void otelLogsHeaders() {
+        // Otel Logs is disabled
+        var nonRunningPicocli = pseudoLaunch("start-dev", "--features=opentelemetry-logs", "--telemetry-logs-enabled=false", "--telemetry-logs-header-Authorization=Bearer");
+        assertError(nonRunningPicocli, "Unknown option:"); //for some reason, the wildcard options does not respect the isEnabled() when disabled
+        onAfter();
+
+        // basic
+        nonRunningPicocli = pseudoLaunch("start-dev", "--features=opentelemetry-logs", "--telemetry-logs-enabled=true", "--telemetry-logs-header-Authorization=Bearer asdlkfjadsflkj");
+        assertNoError(nonRunningPicocli);
+        assertExternalConfig("quarkus.otel.exporter.otlp.logs.headers", "Authorization=Bearer asdlkfjadsflkj");
+        onAfter();
+
+        // multiple
+        nonRunningPicocli = pseudoLaunch("start-dev", "--features=opentelemetry-logs", "--telemetry-logs-enabled=true", "--telemetry-logs-header-Authorization=Bearer asdlkfjadsflkj", "--telemetry-logs-header-Host=localhost:8080");
+        assertNoError(nonRunningPicocli);
+        assertExternalConfig("quarkus.otel.exporter.otlp.logs.headers", "Authorization=Bearer asdlkfjadsflkj,Host=localhost:8080");
+        onAfter();
+
+        // other header
+        nonRunningPicocli = pseudoLaunch("start-dev", "--features=opentelemetry-logs", "--telemetry-logs-enabled=true", "--telemetry-logs-header-Content-length=300");
+        assertNoError(nonRunningPicocli);
+        assertExternalConfig("quarkus.otel.exporter.otlp.logs.headers", "Content-length=300");
+        onAfter();
+
+        // duplicated headers
+        nonRunningPicocli = pseudoLaunch("start-dev", "--features=opentelemetry-logs", "--telemetry-logs-enabled=true", "--telemetry-logs-header-Content-Language=en-US", "--telemetry-logs-header-Content-Language=de-DE");
+        assertNoError(nonRunningPicocli);
+        // the last is accepted
+        assertExternalConfig("quarkus.otel.exporter.otlp.logs.headers", "Content-Language=de-DE");
+        onAfter();
+
+        // Hidden 'telemetry-logs-headers' takes precedence
+        nonRunningPicocli = pseudoLaunch("start-dev", "--features=opentelemetry-logs", "--telemetry-logs-enabled=true", "--telemetry-logs-headers=Overridden-by-me=yes", "--telemetry-logs-header-Authorization=Bearer asdlkfjadsflkj", "--telemetry-logs-header-Host=localhost:8080");
+        assertNoError(nonRunningPicocli);
+        assertExternalConfig("quarkus.otel.exporter.otlp.logs.headers", "Overridden-by-me=yes");
+    }
+
+    @Test
+    public void otelMetricsHeaders() {
+        // Otel Metrics is disabled
+        var nonRunningPicocli = pseudoLaunch("start-dev", "--features=opentelemetry-metrics", "--metrics-enabled=true", "--telemetry-metrics-enabled=false", "--telemetry-metrics-header-Authorization=Bearer");
+        assertError(nonRunningPicocli, "Unknown option:"); //for some reason, the wildcard options does not respect the isEnabled() when disabled
+        onAfter();
+
+        // basic
+        nonRunningPicocli = pseudoLaunch("start-dev", "--features=opentelemetry-metrics", "--telemetry-metrics-enabled=true", "--metrics-enabled=true", "--telemetry-metrics-header-Authorization=Bearer asdlkfjadsflkj");
+        assertNoError(nonRunningPicocli);
+        assertExternalConfig("quarkus.otel.exporter.otlp.metrics.headers", "Authorization=Bearer asdlkfjadsflkj");
+        onAfter();
+
+        // multiple
+        nonRunningPicocli = pseudoLaunch("start-dev", "--features=opentelemetry-metrics", "--telemetry-metrics-enabled=true", "--metrics-enabled=true", "--telemetry-metrics-header-Authorization=Bearer asdlkfjadsflkj", "--telemetry-metrics-header-Host=localhost:8080");
+        assertNoError(nonRunningPicocli);
+        assertExternalConfig("quarkus.otel.exporter.otlp.metrics.headers", "Authorization=Bearer asdlkfjadsflkj,Host=localhost:8080");
+        onAfter();
+
+        // other header
+        nonRunningPicocli = pseudoLaunch("start-dev", "--features=opentelemetry-metrics", "--telemetry-metrics-enabled=true", "--metrics-enabled=true", "--telemetry-metrics-header-Content-length=300");
+        assertNoError(nonRunningPicocli);
+        assertExternalConfig("quarkus.otel.exporter.otlp.metrics.headers", "Content-length=300");
+        onAfter();
+
+        // duplicated headers
+        nonRunningPicocli = pseudoLaunch("start-dev", "--features=opentelemetry-metrics", "--telemetry-metrics-enabled=true", "--metrics-enabled=true", "--telemetry-metrics-header-Content-Language=en-US", "--telemetry-metrics-header-Content-Language=de-DE");
+        assertNoError(nonRunningPicocli);
+        // the last is accepted
+        assertExternalConfig("quarkus.otel.exporter.otlp.metrics.headers", "Content-Language=de-DE");
+        onAfter();
+
+        // Hidden 'telemetry-metrics-headers' takes precedence
+        nonRunningPicocli = pseudoLaunch("start-dev", "--features=opentelemetry-metrics", "--telemetry-metrics-enabled=true", "--metrics-enabled=true", "--telemetry-metrics-headers=Overridden-by-me=yes", "--telemetry-metrics-header-Authorization=Bearer asdlkfjadsflkj", "--telemetry-metrics-header-Host=localhost:8080");
+        assertNoError(nonRunningPicocli);
+        assertExternalConfig("quarkus.otel.exporter.otlp.metrics.headers", "Overridden-by-me=yes");
     }
 
     @Test
@@ -1723,6 +1935,9 @@ public class PicocliTest extends AbstractConfigurationTest {
         KeycloakMain.main(new String[] {"tools", "windows-service"}, nonRunningPicocli);
         assertEquals(CommandLine.ExitCode.USAGE, nonRunningPicocli.exitCode);
         assertTrue(nonRunningPicocli.getErrString().contains("Missing required subcommand"));
+        onAfter();
+        KeycloakMain.main(new String[] {"tools", "windows-service", "uninstall", "--db=bar"}, nonRunningPicocli);
+        assertEquals(CommandLine.ExitCode.USAGE, nonRunningPicocli.exitCode);
     }
 
     @Test

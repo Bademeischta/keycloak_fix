@@ -4,7 +4,7 @@ import java.io.IOException;
 import java.util.List;
 
 import org.keycloak.OAuth2Constants;
-import org.keycloak.protocol.oid4vc.model.AuthorizationDetail;
+import org.keycloak.protocol.oid4vc.model.OID4VCAuthorizationDetail;
 import org.keycloak.util.JsonSerialization;
 import org.keycloak.util.TokenUtil;
 
@@ -24,7 +24,6 @@ public class AccessTokenRequest extends AbstractHttpPostRequest<AccessTokenReque
         return client.getEndpoints().getToken();
     }
 
-
     public AccessTokenRequest signedJwt(String signedJwt) {
         parameter(OAuth2Constants.CLIENT_ASSERTION_TYPE, OAuth2Constants.CLIENT_ASSERTION_TYPE_JWT);
         parameter(OAuth2Constants.CLIENT_ASSERTION, signedJwt);
@@ -43,7 +42,7 @@ public class AccessTokenRequest extends AbstractHttpPostRequest<AccessTokenReque
         return this;
     }
 
-    public AccessTokenRequest authorizationDetails(List<AuthorizationDetail> authDetails) {
+    public AccessTokenRequest authorizationDetails(List<OID4VCAuthorizationDetail> authDetails) {
         parameter(OAuth2Constants.AUTHORIZATION_DETAILS, JsonSerialization.valueAsString(authDetails));
         return this;
     }

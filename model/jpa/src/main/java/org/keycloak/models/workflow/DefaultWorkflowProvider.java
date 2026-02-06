@@ -22,6 +22,7 @@ import org.keycloak.models.KeycloakSessionFactory;
 import org.keycloak.models.ModelValidationException;
 import org.keycloak.models.RealmModel;
 import org.keycloak.models.workflow.WorkflowStateProvider.ScheduledStep;
+import org.keycloak.representations.workflows.StepExecutionStatus;
 import org.keycloak.representations.workflows.WorkflowConstants;
 import org.keycloak.representations.workflows.WorkflowRepresentation;
 import org.keycloak.representations.workflows.WorkflowStepRepresentation;
@@ -56,6 +57,7 @@ public class DefaultWorkflowProvider implements WorkflowProvider {
 
         return switch (type) {
             case USERS -> new UserResourceTypeWorkflowProvider(session);
+            case CLIENTS -> new ClientResourceTypeWorkflowProvider(session);
         };
     }
 
@@ -63,6 +65,7 @@ public class DefaultWorkflowProvider implements WorkflowProvider {
     public void updateWorkflow(Workflow workflow, WorkflowRepresentation representation) {
         // first step - ensure the updated workflow is valid
         WorkflowValidator.validateWorkflow(session, this, representation);
+        WorkflowValidator.validateWorkflowConditionType(session, representation.getConditions(), workflow.getSupportedType());
 
         // check if there are scheduled steps for this workflow - if there aren't, we can update freely
         if (!stateProvider.hasScheduledSteps(workflow.getId())) {
@@ -75,6 +78,11 @@ public class DefaultWorkflowProvider implements WorkflowProvider {
             WorkflowRepresentation currentRepresentation = toRepresentation(workflow);
             if (!Objects.equals(currentRepresentation.getOn(), representation.getOn())) {
                 throw new ModelValidationException("Cannot update 'on' configuration when there are scheduled resources for the workflow.");
+            }
+
+            // we do not allow changing the workflow type
+            if (representation.getSupports() != null && !Objects.equals(representation.getSupports(), currentRepresentation.getSupports())) {
+                throw new ModelValidationException("Cannot update 'supports' configuration.");
             }
 
             // we also need to guarantee the steps remain the same - that is, in the same order with the same 'uses' property.
@@ -94,6 +102,9 @@ public class DefaultWorkflowProvider implements WorkflowProvider {
                 newStep.setId(currentStep.getId());
                 newStep.setPriority(Long.parseLong(currentStep.getPriority()));
             }
+
+            // set the workflow's type
+            representation.setSupports(currentRepresentation.getSupports());
 
             // finally, update the workflow's config along with the steps' configs
             workflow.updateConfig(representation.getConfig(), newSteps);
@@ -128,16 +139,28 @@ public class DefaultWorkflowProvider implements WorkflowProvider {
     public Stream<WorkflowRepresentation> getScheduledWorkflowsByResource(String resourceId) {
         return stateProvider.getScheduledStepsByResource(resourceId).map(scheduledStep -> {
             Workflow workflow = getWorkflow(scheduledStep.workflowId());
-            // get the steps starting from the scheduled step, then add their scheduledAt
-            List<WorkflowStepRepresentation> steps = workflow.getSteps(scheduledStep.stepId()).map(this::toRepresentation).toList();
+            // get the steps, then set the status (completed/pending) and scheduledAt for each pending step
+            List<WorkflowStepRepresentation> steps = workflow.getSteps().map(this::toRepresentation).toList();
+            boolean scheduledStepFound = false;
             Long scheduledAt = null;
             for (WorkflowStepRepresentation step : steps) {
-                if (scheduledAt == null) {
-                    scheduledAt = scheduledStep.scheduledAt();
-                } else if (step.getAfter() != null) {
-                    scheduledAt += DurationConverter.parseDuration(step.getAfter()).toMillis();
+                if (!scheduledStepFound) {
+                    // check if we found the scheduled step
+                    if (step.getId().equals(scheduledStep.stepId())) {
+                        scheduledStepFound = true;
+                    } else {
+                        step.setExecutionStatus(StepExecutionStatus.COMPLETED);
+                    }
                 }
-                step.setScheduledAt(scheduledAt);
+                if (scheduledStepFound) {
+                    if (scheduledAt == null) {
+                        scheduledAt = scheduledStep.scheduledAt();
+                    } else if (step.getAfter() != null) {
+                        scheduledAt += DurationConverter.parseDuration(step.getAfter()).toMillis();
+                    }
+                    step.setScheduledAt(scheduledAt);
+                    step.setExecutionStatus(StepExecutionStatus.PENDING);
+                }
             }
             return new WorkflowRepresentation(workflow.getId(), workflow.getName(), workflow.getConfig(), steps);
         });
@@ -158,7 +181,7 @@ public class DefaultWorkflowProvider implements WorkflowProvider {
             stateProvider.getDueScheduledSteps(workflow).forEach((scheduled) -> {
                 // check if the resource is still passes the workflow's resource conditions
                 DefaultWorkflowExecutionContext context = new DefaultWorkflowExecutionContext(session, workflow, scheduled);
-                EventBasedWorkflow provider = new EventBasedWorkflow(session, getWorkflowComponent(workflow.getId()));
+                EventBasedWorkflow provider = new EventBasedWorkflow(session, workflow.getSupportedType(), getWorkflowComponent(workflow.getId()));
                 if (!provider.validateResourceConditions(context)) {
                     log.debugf("Resource %s is no longer eligible for workflow %s. Cancelling execution of the workflow.",
                             scheduled.resourceId(), scheduled.workflowId());
@@ -178,7 +201,73 @@ public class DefaultWorkflowProvider implements WorkflowProvider {
     }
 
     @Override
+    public void migrateScheduledResources(String stepIdFrom, String stepIdTo) {
+        if (stepIdFrom.equals(stepIdTo)) {
+            return; // nothing to do as both steps are the same
+        }
+
+        // first, we use the steps to find the workflows involved
+        ComponentModel stepFromModel = getWorkflowComponent(stepIdFrom, WorkflowStepProvider.class.getName());
+        Workflow workflowFrom = getWorkflow(stepFromModel.getParentId());
+        ComponentModel stepToModel = getWorkflowComponent(stepIdTo, WorkflowStepProvider.class.getName());
+        Workflow workflowTo = getWorkflow(stepToModel.getParentId());
+
+        // get the scheduled steps from the source step
+        List<ScheduledStep> scheduledStepsFrom = stateProvider.getScheduledStepsByStep(workflowFrom.getId(), stepIdFrom).toList();
+
+        // when migrating between different workflows, we need to perform additional validations
+        if (!workflowFrom.getId().equals(workflowTo.getId())) {
+
+            // ensure both workflows support the same resource type
+            if (workflowFrom.getSupportedType() != workflowTo.getSupportedType()) {
+                throw new ModelValidationException("Cannot migrate scheduled resources between workflows that support different resource types.");
+            }
+
+            // ensure all resources scheduled in the source step satisfy the activation conditions of the destination workflow
+            EventBasedWorkflow eventBasedWorkflow = new EventBasedWorkflow(session, workflowTo.getSupportedType(), getWorkflowComponent(workflowTo.getId()));
+            for (ScheduledStep scheduledStep : scheduledStepsFrom) {
+                DefaultWorkflowExecutionContext context = new DefaultWorkflowExecutionContext(session, workflowTo, scheduledStep);
+                if (!eventBasedWorkflow.validateResourceConditions(context)) {
+                    throw new ModelValidationException("Cannot migrate resource %s to workflow %s as it does not satisfy the workflow's activation conditions."
+                            .formatted(scheduledStep.resourceId(), workflowTo.getName()));
+                }
+            }
+        }
+
+        // perform the migration - for each scheduled step in the source, we remove it and activate the destination workflow from the specified step
+        int stepPosition = workflowTo.getStepById(stepIdTo).getPriority() - 1;
+        for (ScheduledStep scheduledStep : scheduledStepsFrom) {
+            // remove the scheduled step from the source workflow
+            stateProvider.remove(scheduledStep.executionId());
+
+            // activate the destination workflow for the resource, starting from the specified step
+            DefaultWorkflowExecutionContext context;
+            if (workflowFrom.getId().equals(workflowTo.getId())) {
+                // we reuse the executionId when migrating within the same workflow
+                context = new DefaultWorkflowExecutionContext(session, workflowTo, new AdhocWorkflowEvent(workflowTo.getSupportedType(), scheduledStep.resourceId()),
+                        scheduledStep.executionId());
+            } else {
+                context = new DefaultWorkflowExecutionContext(session, workflowTo, new AdhocWorkflowEvent(workflowTo.getSupportedType(),
+                        scheduledStep.resourceId()));
+            }
+            context.restart(stepPosition);
+
+            if (log.isDebugEnabled()) {
+                WorkflowStep stepFrom = workflowFrom.getStepById(stepIdFrom);
+                WorkflowStep stepTo = workflowTo.getStepById(stepIdTo);
+                log.debugf("Migrated resource %s from workflow %s (step %s) to workflow %s (step %s). New execution id: %s",
+                        scheduledStep.resourceId(), workflowFrom.getName(), stepFrom.getProviderId(), workflowTo.getName(),
+                        stepTo.getProviderId(), context.getExecutionId());
+            }
+        }
+    }
+
+    @Override
     public void activate(Workflow workflow, ResourceType type, String resourceId) {
+        if (type != workflow.getSupportedType()) {
+            throw new BadRequestException("Resource Type '%s' is not supported for this workflow (supports %s)".formatted(type.name(), workflow.getSupportedType()));
+        }
+
         processEvent(Stream.of(workflow), new AdhocWorkflowEvent(type, resourceId));
     }
 
@@ -191,10 +280,11 @@ public class DefaultWorkflowProvider implements WorkflowProvider {
     public void activateForAllEligibleResources(Workflow workflow) {
         if (workflow.isEnabled()) {
             WorkflowProvider provider = getWorkflowProvider(workflow);
-            ResourceTypeSelector selector = provider.getResourceTypeSelector(ResourceType.USERS);
+            ResourceType supportedType = workflow.getSupportedType();
+            ResourceTypeSelector selector = provider.getResourceTypeSelector(supportedType);
             selector.getResourceIds(workflow)
-                    .forEach(resourceId -> processEvent(Stream.of(workflow), new AdhocWorkflowEvent(ResourceType.USERS, resourceId)));
-        }
+                    .forEach(resourceId -> processEvent(Stream.of(workflow), new AdhocWorkflowEvent(supportedType, resourceId)));
+            }
     }
 
     @Override
@@ -217,6 +307,10 @@ public class DefaultWorkflowProvider implements WorkflowProvider {
 
         Workflow workflow = addWorkflow(new Workflow(session, rep.getId(), config));
         workflow.addSteps(rep.getSteps());
+
+        // After adding steps, validate that the condition type is compatible with the computed workflow type.
+        WorkflowValidator.validateWorkflowConditionType(session, workflow.getCondition(), workflow.getSupportedType());
+
         return workflow;
     }
 
@@ -225,14 +319,18 @@ public class DefaultWorkflowProvider implements WorkflowProvider {
     }
 
     private ComponentModel getWorkflowComponent(String id) {
+        return this.getWorkflowComponent(id, WorkflowProvider.class.getName());
+    }
+
+    private ComponentModel getWorkflowComponent(String id, String providerType) {
         ComponentModel component = realm.getComponent(id);
 
-        if (component == null || !WorkflowProvider.class.getName().equals(component.getProviderType())) {
-            throw new BadRequestException("Not a valid resource workflow: " + id);
+        if (component == null || !Objects.equals(providerType, component.getProviderType())) {
+            throw new BadRequestException("Not a valid workflow resource: " + id);
         }
-
         return component;
     }
+
 
     /* ================================= Workflows component providers and factories ================================= */
 
@@ -251,7 +349,7 @@ public class DefaultWorkflowProvider implements WorkflowProvider {
                 return;
             }
 
-            EventBasedWorkflow provider = new EventBasedWorkflow(session, getWorkflowComponent(workflow.getId()));
+            EventBasedWorkflow provider = new EventBasedWorkflow(session, workflow.getSupportedType(), getWorkflowComponent(workflow.getId()));
 
             try {
                 if (!provider.supports(event.getResourceType())) {

@@ -22,6 +22,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Properties;
 import java.util.concurrent.TimeoutException;
 
 import org.keycloak.common.Version;
@@ -32,8 +33,8 @@ import org.keycloak.config.Option;
 import org.keycloak.config.SecurityOptions;
 import org.keycloak.platform.Platform;
 import org.keycloak.quarkus.runtime.Environment;
+import org.keycloak.quarkus.runtime.KeycloakMain;
 import org.keycloak.quarkus.runtime.cli.Picocli;
-import org.keycloak.quarkus.runtime.configuration.ConfigArgsConfigSource;
 import org.keycloak.quarkus.runtime.configuration.Configuration;
 import org.keycloak.quarkus.runtime.configuration.IgnoredArtifacts;
 
@@ -61,7 +62,6 @@ public class Keycloak {
 
     static {
         System.setProperty("java.util.logging.manager", "org.jboss.logmanager.LogManager");
-        System.setProperty(Environment.KC_CONFIG_BUILT, "true");
         System.setProperty("quarkus.http.test-port", "${kc.http-port}");
         System.setProperty("quarkus.http.test-ssl-port", "${kc.https-port}");
         System.setProperty("java.util.concurrent.ForkJoinPool.common.threadFactory", QuarkusForkJoinWorkerThreadFactory.class.getName());
@@ -175,6 +175,7 @@ public class Keycloak {
     private Path homeDir;
     private List<Dependency> dependencies;
     private boolean fipsEnabled;
+    private Properties systemProperties;
 
     public Keycloak() {
         this(null, Version.VERSION, List.of(), false);
@@ -192,6 +193,7 @@ public class Keycloak {
     }
 
     private Keycloak start(List<String> args) {
+        systemProperties = (Properties) System.getProperties().clone();
         QuarkusBootstrap.Builder builder = QuarkusBootstrap.builder()
                 .setExistingModel(applicationModel)
                 .setApplicationRoot(applicationModel.getApplicationModule().getModuleDir().toPath())
@@ -204,7 +206,7 @@ public class Keycloak {
             curated = builder.build().bootstrap();
             AugmentAction action = curated.createAugmentor();
             Environment.setHomeDir(homeDir);
-            ConfigArgsConfigSource.setCliArgs(args.toArray(new String[0]));
+            initSys(args.toArray(String[]::new));
             System.setProperty(Environment.KC_TEST_REBUILD, "true");
             StartupAction startupAction = action.createInitialRuntimeApplication();
             System.getProperties().remove(Environment.KC_TEST_REBUILD);
@@ -218,8 +220,15 @@ public class Keycloak {
     }
 
     public void stop() throws TimeoutException {
-        if (isRunning()) {
-            closeApplication();
+        try {
+            if (isRunning()) {
+                closeApplication();
+            }
+        } finally {
+            if (systemProperties != null) {
+                KeycloakMain.reset(systemProperties);
+                systemProperties = null;
+            }
         }
     }
 
@@ -311,5 +320,31 @@ public class Keycloak {
 
         application = null;
         curated = null;
+    }
+
+    /**
+     * Uses a dummy {@link Picocli} to process the args and set system
+     * variables needed to run augmentation
+     */
+    public static void initSys(String... args) {
+        Picocli picocli = new Picocli() {
+
+            @Override
+            public void build() throws Throwable {
+                // do nothing
+            }
+
+            @Override
+            public void start() {
+                throw new AssertionError();
+            }
+
+            @Override
+            public void exit(int exitCode) {
+                // do nothing
+            }
+        };
+        picocli.parseAndRun(List.of(args));
+        System.setProperty(Environment.KC_CONFIG_BUILT, "true");
     }
 }

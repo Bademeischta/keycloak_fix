@@ -14,10 +14,9 @@ import org.keycloak.representations.admin.v2.BaseClientRepresentation;
 
 import com.fasterxml.jackson.databind.JsonNode;
 
-public interface ClientApi {
+import static org.keycloak.admin.api.AdminApi.CONTENT_TYPE_MERGE_PATCH;
 
-    // TODO move these
-    String CONTENT_TYPE_MERGE_PATCH = "application/merge-patch+json";
+public interface ClientApi {
 
     @GET
     @Produces(MediaType.APPLICATION_JSON)
@@ -36,6 +35,7 @@ public interface ClientApi {
     @Produces(MediaType.APPLICATION_JSON)
     BaseClientRepresentation patchClient(JsonNode patch);
 
+    // TODO marked as producing json, but does not return anything
     @DELETE
     @Produces(MediaType.APPLICATION_JSON)
     void deleteClient();

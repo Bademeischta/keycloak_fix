@@ -24,6 +24,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.stream.Collectors;
 
+import jakarta.ws.rs.NotFoundException;
 import jakarta.ws.rs.core.UriBuilder;
 import jakarta.ws.rs.core.UriInfo;
 
@@ -46,6 +47,7 @@ import org.keycloak.models.RealmModel;
 import org.keycloak.models.oid4vci.CredentialScopeModel;
 import org.keycloak.protocol.oid4vc.OID4VCLoginProtocolFactory;
 import org.keycloak.protocol.oid4vc.issuance.credentialbuilder.CredentialBuilder;
+import org.keycloak.protocol.oid4vc.issuance.credentialbuilder.CredentialBuilderFactory;
 import org.keycloak.protocol.oid4vc.model.CredentialIssuer;
 import org.keycloak.protocol.oid4vc.model.CredentialRequestEncryptionMetadata;
 import org.keycloak.protocol.oid4vc.model.CredentialResponseEncryptionMetadata;
@@ -103,6 +105,11 @@ public class OID4VCIssuerWellKnownProvider implements WellKnownProvider {
 
     @Override
     public Object getConfig() {
+        RealmModel realm = keycloakSession.getContext().getRealm();
+        if (!realm.isVerifiableCredentialsEnabled()) {
+            LOGGER.debugf("OID4VCI functionality is disabled for realm '%s'. Verifiable Credentials switch is off.", realm.getName());
+            throw new NotFoundException("OID4VCI functionality is disabled for this realm");
+        }
         CredentialIssuer issuer = getIssuerMetadata();
         return getMetadataResponse(issuer, keycloakSession);
     }
@@ -453,24 +460,54 @@ public class OID4VCIssuerWellKnownProvider implements WellKnownProvider {
                 keycloakSession.clientScopes()
                         .getClientScopesByProtocol(realm, OID4VCIConstants.OID4VC_PROTOCOL)
                         .map(CredentialScopeModel::new)
-                        .map(clientScope -> {
-                            return SupportedCredentialConfiguration.parse(keycloakSession,
-                                    clientScope,
+                        .map(credentialScope -> {
+                            SupportedCredentialConfiguration config = SupportedCredentialConfiguration.parse(keycloakSession,
+                                    credentialScope,
                                     globalSupportedSigningAlgorithms
                             );
+                            applyFormatSpecificMetadata(keycloakSession, config, credentialScope);
+                            return config;
                         })
                         .collect(Collectors.toMap(SupportedCredentialConfiguration::getId, sc -> sc, (sc1, sc2) -> sc1));
 
         return supportedCredentialConfigurations;
     }
 
+
+    private static void applyFormatSpecificMetadata(KeycloakSession keycloakSession,
+                                                     SupportedCredentialConfiguration config,
+                                                     CredentialScopeModel credentialScope) {
+        String format = config.getFormat();
+        if (format == null) {
+            return;
+        }
+
+        // Find the CredentialBuilder for this format using the factory pattern
+        CredentialBuilder credentialBuilder = keycloakSession.getKeycloakSessionFactory()
+                .getProviderFactoriesStream(CredentialBuilder.class)
+                .map(factory -> (CredentialBuilderFactory) factory)
+                .filter(factory -> format.equals(factory.getSupportedFormat()))
+                .findFirst()
+                .map(factory -> factory.create(keycloakSession, null))
+                .orElse(null);
+
+        if (credentialBuilder == null) {
+            LOGGER.debugf("No CredentialBuilder found for format: %s", format);
+            return;
+        }
+
+        credentialBuilder.contributeToMetadata(config, credentialScope);
+    }
+
     public static SupportedCredentialConfiguration toSupportedCredentialConfiguration(KeycloakSession keycloakSession,
                                                                                       CredentialScopeModel credentialModel) {
         List<String> globalSupportedSigningAlgorithms = getSupportedAsymmetricSignatureAlgorithms(keycloakSession);
 
-        return SupportedCredentialConfiguration.parse(keycloakSession,
+        SupportedCredentialConfiguration config = SupportedCredentialConfiguration.parse(keycloakSession,
                 credentialModel,
                 globalSupportedSigningAlgorithms);
+        applyFormatSpecificMetadata(keycloakSession, config, credentialModel);
+        return config;
     }
 
     /**

@@ -21,6 +21,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.stream.Stream;
 
+import org.keycloak.models.GroupModel;
 import org.keycloak.models.IdentityProviderModel;
 import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.OrganizationDomainModel;
@@ -300,6 +301,39 @@ public class InfinispanOrganizationProvider implements OrganizationProvider {
 
         return cached.isManaged();
 
+    }
+
+    @Override
+    public GroupModel createGroup(OrganizationModel organization, String id, String name, GroupModel toParent) {
+        return getDelegate().createGroup(organization, id, name, toParent);
+    }
+
+    @Override
+    public Stream<GroupModel> getTopLevelGroups(OrganizationModel organization, Integer firstResult, Integer maxResults) {
+        // Don't cache top-level groups - delegate directly to DB
+        // This follows the same pattern as search queries to avoid unbounded cache growth
+        return getDelegate().getTopLevelGroups(organization, firstResult, maxResults);
+    }
+
+    @Override
+    public Stream<GroupModel> searchGroupsByName(OrganizationModel organization, String search, Boolean exact, Integer firstResult, Integer maxResults) {
+        // Don't cache search queries with pagination - delegate directly to DB
+        // This follows the same pattern as RealmCacheSession.searchForGroupByNameStream
+        return getDelegate().searchGroupsByName(organization, search, exact, firstResult, maxResults);
+    }
+
+    @Override
+    public Stream<GroupModel> searchGroupsByAttributes(OrganizationModel organization, Map<String, String> attributes, Integer firstResult, Integer maxResults) {
+        // Don't cache search queries with pagination - delegate directly to DB
+        // This follows the same pattern as RealmCacheSession.searchGroupsByAttributes
+        return getDelegate().searchGroupsByAttributes(organization, attributes, firstResult, maxResults);
+    }
+
+    @Override
+    public Stream<GroupModel> getOrganizationGroupsByMember(OrganizationModel organization, UserModel member) {
+        // Don't cache per-member group lists - delegate directly to DB
+        // Currently only used in export
+        return getDelegate().getOrganizationGroupsByMember(organization, member);
     }
 
     @Override

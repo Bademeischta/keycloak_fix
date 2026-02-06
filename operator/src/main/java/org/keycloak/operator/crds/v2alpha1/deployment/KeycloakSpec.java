@@ -21,6 +21,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+import org.keycloak.operator.crds.v2alpha1.deployment.spec.AdminSpec;
 import org.keycloak.operator.crds.v2alpha1.deployment.spec.BootstrapAdminSpec;
 import org.keycloak.operator.crds.v2alpha1.deployment.spec.CacheSpec;
 import org.keycloak.operator.crds.v2alpha1.deployment.spec.DatabaseSpec;
@@ -35,6 +36,7 @@ import org.keycloak.operator.crds.v2alpha1.deployment.spec.ProbeSpec;
 import org.keycloak.operator.crds.v2alpha1.deployment.spec.ProxySpec;
 import org.keycloak.operator.crds.v2alpha1.deployment.spec.SchedulingSpec;
 import org.keycloak.operator.crds.v2alpha1.deployment.spec.ServiceMonitorSpec;
+import org.keycloak.operator.crds.v2alpha1.deployment.spec.TelemetrySpec;
 import org.keycloak.operator.crds.v2alpha1.deployment.spec.TracingSpec;
 import org.keycloak.operator.crds.v2alpha1.deployment.spec.TransactionsSpec;
 import org.keycloak.operator.crds.v2alpha1.deployment.spec.Truststore;
@@ -137,6 +139,10 @@ public class KeycloakSpec {
     @JsonPropertyDescription("Controls the ingress traffic flow into Keycloak pods.")
     private NetworkPolicySpec networkPolicySpec;
 
+    @JsonProperty("telemetry")
+    @JsonPropertyDescription("In this section you can configure general shared OpenTelemetry settings for Keycloak.")
+    private TelemetrySpec telemetrySpec;
+
     @JsonProperty("tracing")
     @JsonPropertyDescription("In this section you can configure OpenTelemetry Tracing for Keycloak.")
     private TracingSpec tracingSpec;
@@ -164,6 +170,10 @@ public class KeycloakSpec {
     @JsonProperty("automountServiceAccountToken")
     @JsonPropertyDescription("Set this to to false to disable automounting the default ServiceAccount Token and Service CA. This is enabled by default.")
     private Boolean automountServiceAccountToken;
+
+    @JsonProperty("admin")
+    @JsonPropertyDescription("In this section you can find all properties related to making admin connections from the operator to the server. These settings are not used by the server.")
+    private AdminSpec adminSpec;
 
     public HttpSpec getHttpSpec() {
         return httpSpec;
@@ -339,6 +349,14 @@ public class KeycloakSpec {
         this.networkPolicySpec = networkPolicySpec;
     }
 
+    public TelemetrySpec getTelemetrySpec() {
+        return telemetrySpec;
+    }
+
+    public void setTelemetrySpec(TelemetrySpec telemetrySpec) {
+        this.telemetrySpec = telemetrySpec;
+    }
+
     public TracingSpec getTracingSpec() {
         return tracingSpec;
     }
@@ -396,5 +414,13 @@ public class KeycloakSpec {
 
     public void setAutomountServiceAccountToken(Boolean automountServiceAccountToken) {
         this.automountServiceAccountToken = automountServiceAccountToken;
+    }
+
+    public AdminSpec getAdminSpec() {
+        return adminSpec;
+    }
+
+    public void setAdminSpec(AdminSpec adminSpec) {
+        this.adminSpec = adminSpec;
     }
 }

@@ -57,6 +57,7 @@ public class SupportedCredentialConfiguration {
     @JsonIgnore
     private static final String CREDENTIAL_METADATA_KEY = "credential_metadata";
 
+    @JsonIgnore
     private String id;
 
     @JsonProperty(FORMAT_KEY)
@@ -107,12 +108,6 @@ public class SupportedCredentialConfiguration {
 
         String format = Optional.ofNullable(credentialScope.getFormat()).orElse(Format.SD_JWT_VC);
         credentialConfiguration.setFormat(format);
-
-        String vct = Optional.ofNullable(credentialScope.getVct()).orElse(credentialScope.getName());
-        credentialConfiguration.setVct(vct);
-
-        CredentialDefinition credentialDefinition = CredentialDefinition.parse(credentialScope);
-        credentialConfiguration.setCredentialDefinition(credentialDefinition);
 
         KeyAttestationsRequired keyAttestationsRequired = KeyAttestationsRequired.parse(credentialScope);
         ProofTypesSupported proofTypesSupported = ProofTypesSupported.parse(keycloakSession,
